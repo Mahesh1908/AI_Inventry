@@ -2,28 +2,22 @@ import { StoredFulfilment } from '../types/domain';
 
 /**
  * Builds the §7.2/§7.3/§7.4 API response shape from a stored fulfilment
- * record. releasedQuantity/backorderQuantity/allocations are derived at read
- * time, never stored as separate columns (§7.4).
+ * record. version2.md §6.2: releasedQuantity/backorderQuantity/allocations
+ * are read directly off the stored record (§5.7) - they now coexist for
+ * PARTIALLY_RELEASED instead of being mutually exclusive.
  */
 export function toOrderApiResponse(fulfilment: StoredFulfilment, previouslyRecorded: boolean) {
-  const isReleased = fulfilment.status === 'RELEASED';
+  const isBlocked = fulfilment.status === 'BLOCKED';
 
   return {
     orderId: fulfilment.orderId,
     status: fulfilment.status,
-    reason: isReleased ? null : fulfilment.blockReason,
-    releasedQuantity: isReleased ? fulfilment.quantity : 0,
-    backorderQuantity: isReleased ? 0 : fulfilment.quantity,
-    allocations: isReleased
-      ? [
-          {
-            warehouseId: fulfilment.selectedWarehouseId,
-            allocatedQuantity: fulfilment.allocatedQuantity,
-            warehouseDispatchDate: fulfilment.warehouseDispatchDate,
-          },
-        ]
-      : [],
-    expectedDeliveryDate: isReleased ? fulfilment.expectedDeliveryDate : null,
+    reason: isBlocked ? fulfilment.blockReason : null,
+    releasedQuantity: fulfilment.releasedQuantity,
+    backorderQuantity: fulfilment.backorderedQuantity,
+    backorderStatus: fulfilment.backorderStatus,
+    allocations: fulfilment.allocations,
+    expectedDeliveryDate: fulfilment.expectedDeliveryDate,
     promisedDeliveryDate: fulfilment.promisedDeliveryDate,
     evaluatedAt: fulfilment.evaluatedAt,
     previouslyRecorded,

@@ -1,0 +1,425 @@
+
+> <ide_opened_file>The user opened the file
+  d:\AI_Inventry\conversation\development.txt in the IDE. This may or may not
+  be related to the current task.</ide_opened_file>
+
+> understand the project functionality ,now i need to add the below
+  requirements to my existing functionality,give me the version2.md file which
+  describes the currect flow and the below requrements need to be done.
+  Standard customers remain unchanged: the full quantity must be available from
+  one warehouse.
+
+  Priority customers may combine inventory across WH-A, WH-B and WH-C in that
+  order.
+  If at least 70% of requested quantity is available, release the available
+  quantity and create one Open backorder for the balance.
+  Exactly 70% qualifies. If less than 70% is available, Block the order with no
+  allocation and no backorder.
+  Never allocate more than the requested quantity.
+  Make the 70% threshold configurable.
+  Repeated processing of the same Order ID must not create duplicate
+  allocations or backorders; reuse the established result.
+  Persist Released Quantity, Backordered Quantity, allocations and backorder
+  status.
+  Preserve all Stage 1 behaviour and update tests accordingly.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Agent(Survey backend engine and DB implementation)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● I'm surveying the actual codebase (engine, routes, DB schema, config, tests)
+  in the background so version2.md reflects the real implementation, not just
+  the development.md spec. I'll draft the document once that comes back.
+
+● Agent "Survey backend engine and DB implementation" finished · 44s
+
+● Write(version2.md)
+  ⎿  Wrote 301 lines to version2.md
+       1 # Cement Company — Order Fulfilment & Inventory Management Syste
+       2
+         arehouse Fulfilment**
+       5 | Field         | Value
+       6 | ------------- | ----------------------------------------------
+         ----------------------- |
+                                |
+                                 |
+                                 |
+         .in)
+     … +643 lines (ctrl+o to expand)
+
+● I've created version2.md at the project root. It:
+
+  - Recaps the actual Stage 1 implementation (verified against the real code,
+    not just development.md) so the delta is grounded in what exists today.
+  - Specifies the new priority-customer algorithm: combine WH-A→B→C in order,
+    release up to the requested quantity, block below the (configurable) 70%
+    threshold, backorder the remainder otherwise, never over-allocate.
+  - Introduces the schema additions needed to persist this: customer_priority on
+    Customer_selvalakshmi, a reintroduced OrderAllocation_selvalakshmi
+    (1-to-many, since priority orders can span 3 warehouses), a new
+    Backorder_selvalakshmi table, a configurable AppConfig_selvalakshmi table
+    for the threshold, and new released_quantity/backordered_quantity columns
+    plus a PARTIALLY_RELEASED status.
+  - Calls out two explicit assumptions for you to confirm/correct (D-14, D-15 in
+    the Decisions Log) — notably that delivery date isn't part of the
+    priority-customer check (the requirement text doesn't mention it), and that
+    priority is a customer-master attribute rather than something the order
+    payload can claim.
+  - Adds test scenarios T-20–T-30 (partial release, exact-70% boundary,
+    below-threshold block, idempotent re-submission, concurrency) plus a
+    regression requirement that all of development.md's T-01–T-19 keep passing
+    unchanged for standard customers.
+
+  Worth flagging before implementation starts: D-15 (no date gate for priority
+  orders) is my reading of the literal requirement text, not something you
+  stated explicitly — let me know if that's wrong.
+
+> <ide_opened_file>The user opened the file d:\AI_Inventry\new_requirement.md
+  in the IDE. This may or may not be related to the current
+  task.</ide_opened_file>
+
+> the customer type should be 2 tupe - standart / priority,update this also in
+  the version2.md..
+
+  Read 2 files (ctrl+o to expand)
+
+● Update(version2.md)
+  ⎿  Added 1 line, removed 1 line
+      39  | --------------------------- | -------------------------------
+          ------------------------------- | -----------------------------
+          ---------------------------------------------------------------
+          ------------------------------- |
+      40  | Standard customers          | Single warehouse, all-or-nothin
+          g                               | **Unchanged.** Exactly the St
+          age 1 algorithm, byte-for-byte.                                
+                                          |
+      41  | Priority customers          | Did not exist as a concept     
+                                          | May combine WH-A + WH-B + WH-
+          C (in that fixed order) to cover the order. Partial release + o
+          ne Open backorder is possible. |
+      42 -| "Priority" designation      | N/A                            
+         -                                 | New attribute on the **custo
+         -mer master**, not on the order payload (see §3.1).             
+         -                                |                              
+      42 +| "Priority" designation      | `customer_type` accepted on the
+         + order request but unused        | `customer_type` becomes a re
+         +quired, validated 2-value enum — exactly `Standard` or `Priorit
+         +y` — and now drives which algorithm runs (see §3.1). |         
+      43  | Threshold                   | N/A                            
+                                           | 70% of requested quantity, *
+          *configurable** (see §4).                                      
+                                           |
+      44  | Allocation storage          | 0 or 1 row folded into `OrderFu
+          lfilment_selvalakshmi`           | Reintroduces a one-to-many a
+          llocation table — a priority order can now touch up to three wa
+          rehouses (see §3.3).            |
+      45  | Backorder                   | Did not exist                  
+                                           | New `Backorder_selvalakshmi`
+           table; at most one Open backorder per order (see §3.4).       
+                                           |
+
+● Update(version2.md)
+  ⎿  Added 9 lines, removed 5 lines
+      50  
+      51  ## 3. Data Model Changes
+      52  
+      53 -### 3.1 `Customer_selvalakshmi` — new column                   
+      53 +### 3.1 `OrderHeader_selvalakshmi.customer_type` — becomes a re
+         +quired, validated 2-value type                                 
+      54  
+      55 -| Column               | Type        | Constraints             
+         -            | Notes                                            
+         -                     |                                         
+      56 -| --------------------- | ----------- | -----------------------
+         -------------- | -----------------------------------------------
+         ------------------------ |                                      
+      57 -| `customer_priority`  | VARCHAR(20) | NOT NULL, DEFAULT `'STAN
+         -DARD'`      | `STANDARD` or `PRIORITY`. Governs which fulfilmen
+         -t algorithm applies. |                                         
+      55 +| Column          | Type        | Constraints                  
+         +                            | Notes                            
+         +                                              |                
+      56 +| ---------------- | ----------- | ----------------------------
+         +------------------------------- | -----------------------------
+         +---------------------------------------------------- |         
+      57 +| `customer_type` | VARCHAR(20) | NOT NULL, CHECK (`customer_ty
+         +pe IN ('Standard','Priority')`) | Was nullable/unused (`develop
+         +ment.md` §4.5). Now required and drives §5.1's branch. |       
+      58  
+      59 -**Design decision (D-14).** Priority is a property of the **cus
+         -tomer master**, read by the engine the same way `eligible_statu
+         -s` already is — not a field the caller sets per-order. `OrderHe
+         -ader_selvalakshmi.customer_type` (existing, currently unused — 
+         -`development.md` §4.5) is left as-is: still accepted and stored
+         - for informational purposes, still **not** used for branching. 
+         -This keeps the engine's trust boundary consistent (customer fac
+         -ts come from the customer master; the order payload cannot clai
+         -m priority status for itself) and avoids a customer silently ge
+         -tting priority treatment by mislabeling their own request.     
+      59 +**Design decision (D-14, revised).** `customer_type` is exactly
+         + the 2-value type the customer sends on the order request — lit
+         +eral values `"Standard"` and `"Priority"` (matching the exact-c
+         +asing API convention in §6.1) — not a separate flag stored on t
+         +he customer master. It moves from "accepted and persisted but i
+         +gnored" (Stage 1) to "required and used for branching" (Stage 2
+         +):                                                             
+      60  
+      61 +- Structural validation (§8-equivalent for Stage 2) rejects any
+         + request where `customerType` is missing or is anything other t
+         +han `"Standard"` or `"Priority"` — HTTP 400, nothing persisted,
+         + same as any other malformed field.                            
+      62 +- The looked-up `Customer_selvalakshmi` row is unchanged — `eli
+         +gible_status` still gates existence/eligibility exactly as in S
+         +tage 1, independent of the order's `customerType`.             
+      63 +- No new column is added to `Customer_selvalakshmi` for this. I
+         +f a future requirement wants priority to be a durable property 
+         +of the customer *account* (so it can't vary order-to-order), th
+         +at would be a separate change — flagged here but not built now,
+         + since the current requirement text and the example payload bot
+         +h put `customerType` on the order.                             
+      64 +                                                               
+      65  ### 3.2 New config table — `AppConfig_selvalakshmi`
+      66  
+      67  | Column         | Type         | Constraints | Notes          
+                                             |
+
+● Now updating the downstream references (§5.1 branch condition, §6.1, §6.3,
+  D-14, Stage 9 table).
+
+● Update(version2.md)
+  ⎿  Added 2 lines, removed 2 lines
+      135     ├─ Customer not found / not eligible ──────────────────► BL
+           OCKED (unchanged codes)
+      136     ├─ No inventory rows for product in any warehouse ─────► BL
+           OCKED (PRODUCT_NOT_FOUND)
+      137     │
+      138 -   ├─ customer_priority == STANDARD ──────────────────────► St
+          -age 1 algorithm, unchanged (§1)                               
+      138 +   ├─ customerType == "Standard" ──────────────────────────► S
+          +tage 1 algorithm, unchanged (§1)                              
+      139     │
+      140 -   └─ customer_priority == PRIORITY ──────────────────────► St
+          -age 2 algorithm (§5.2)                                        
+      140 +   └─ customerType == "Priority" ──────────────────────────► S
+          +tage 2 algorithm (§5.2)                                       
+      141  ```
+      142  
+      143  The customer/product existence checks run **before** branching
+            on priority — a not-found customer or product blocks identica
+           lly for both customer types.
+
+● Update(version2.md)
+  ⎿  Added 2 lines, removed 2 lines
+      220  
+      221  ## 6. REST API Changes
+      222  
+      223 -### 6.1 Request — unchanged shape                             
+      223 +### 6.1 Request — `customerType` becomes required and validate
+          +d                                                             
+      224  
+      225 -No new request field is required. `customerType` in the reques
+          -t body remains accepted and stored as-is (informational, per §
+          -3.1) — priority behaviour is driven entirely by the looked-up 
+          -customer master row, not anything the caller sends.           
+      225 +No new request field is added, but `customerType` changes from
+          + optional/ignored to **required**, with exactly two accepted l
+          +iteral values: `"Standard"` or `"Priority"` (per §3.1). Any ot
+          +her value, or a missing field, is a structural validation fail
+          +ure (HTTP 400, nothing persisted) — same treatment as an inval
+          +id `quantity` or malformed date. This value is what §5.1 branc
+          +hes on.                                                       
+      226  
+      227  ### 6.2 Response — `allocations` becomes genuinely multi-entry
+           ; new backorder fields
+      228  
+
+● Update(version2.md)
+  ⎿  Added 1 line, removed 1 line
+      253  
+      254  ### 6.3 Other endpoints
+      255  
+      256 -`GET /api/customers` should now also return `customerPriority`
+          - per customer so the UI can show/label it; `GET /api/orders` (
+          -list) should surface `status` including the new `PARTIALLY_REL
+          -EASED` value. No other endpoint changes.                      
+      256 +`GET /api/orders` (list) should surface `status` including the
+          + new `PARTIALLY_RELEASED` value and each order's `customerType
+          +`. `GET /api/customers` is unchanged — priority is an order-le
+          +vel field, not a customer-master attribute (§3.1), so there is
+          + nothing new to expose there.                                 
+      257  
+      258  ---
+      259  
+
+● Update(version2.md)
+  ⎿  Added 1 line, removed 1 line
+      281  
+      282  | #    | Topic                                  | Decision    
+                                                                         
+                                                                         
+                            | Status                                     
+                   |
+      283  | ---- | ---------------------------------------- | ----------
+           --------------------------------------------------------------
+           --------------------------------------------------------------
+           ----------------- | ------------------------------------------
+           --------- |
+      284 -| D-14 | Where "priority" lives                 | New `custome
+          -r_priority` column on `Customer_selvalakshmi`, not on the orde
+          -r payload. `OrderHeader.customer_type` stays unused, informati
+          -onal only.        | My design decision — flagged, reversible  
+          -          |                                                   
+      284 +| D-14 | Where "priority" lives                 | `OrderHeader
+          +_selvalakshmi.customer_type` — required, exactly `"Standard"` 
+          +or `"Priority"` — is the field the engine branches on. No new 
+          +column on `Customer_selvalakshmi`; priority is per-order, not 
+          +a durable customer-master attribute. | Confirmed by requiremen
+          +t text (exact 2-value `customerType` convention) |            
+      285  | D-15 | Delivery date for priority orders      | Not checked 
+           — priority algorithm only tests combined quantity against the 
+           threshold, per the literal requirement text.                  
+                             | **Assumption — please confirm or correct**
+                     |
+      286  | D-16 | Threshold storage                      | New `AppConf
+           ig_selvalakshmi` key/value table, cached in memory per process
+           , default 70, engine takes it as a parameter (no DB dependency
+            in the engine).   | My design decision — reversible to an env
+            var if preferred |
+      287  | D-17 | Allocation table reintroduced           | `OrderAlloc
+           ation_selvalakshmi` (one-to-many) replaces the Stage 1 folded 
+           columns for all new writes; old columns kept nullable, unused 
+           going forward.       | Required by the multi-warehouse require
+           ment          |
+
+● Now the Stage-artifacts table (§9) still references customer_priority column
+  and "priority flag shown on customer records" — fixing those too.
+
+● Update(version2.md)
+  ⎿  Added 1 line, removed 1 line
+      296  
+      297  | Stage                                  | Deliverable artifac
+           t                                              | Contents     
+                                                                         
+                                 |
+      298  | ---------------------------------------- | -----------------
+           ---------------------------------------------------- | -------
+           --------------------------------------------------------------
+           ------------------------------- |
+      299 -| **Stage 2a — Schema**                  | `db/schema_v2.sql` 
+          -(or additive migration in `db/schema.sql`)         | `customer
+          -_priority` column, `AppConfig_selvalakshmi`, `OrderAllocation_
+          -selvalakshmi`, `Backorder_selvalakshmi`, new `OrderFulfilment`
+          - columns |                                                    
+      299 +| **Stage 2a — Schema**                  | `db/schema_v2.sql` 
+          +(or additive migration in `db/schema.sql`)         | `customer
+          +_type` NOT NULL + CHECK constraint on `OrderHeader_selvalakshm
+          +i`, `AppConfig_selvalakshmi`, `OrderAllocation_selvalakshmi`, 
+          +`Backorder_selvalakshmi`, new `OrderFulfilment` columns |     
+      300  | **Stage 2b — Seed data**               | `db/seed_v2.sql`   
+                                                               | At least
+            one `PRIORITY` customer, inventory fixtures spanning the exac
+           t-70%, below-70%, and over-100% cases (T-20–T-25) |
+      301  | **Stage 2c — Fulfilment engine**       | `backend/src/engine
+           /fulfilmentEngine.ts` (extended) + unit tests       | `selectW
+           arehousesForPriority()` alongside the untouched Stage 1 `selec
+           tWarehouse()`; unit tests T-20–T-25, T-27–T-29 |
+      302  | **Stage 2d — Stored procedures**       | `db/procs/*.sql` (e
+           xtended)                                            | New/exte
+           nded proc for multi-row allocation insert + backorder insert i
+           n one transaction               |
+
+● Update(version2.md)
+  ⎿  Added 1 line, removed 1 line
+      297  | Stage                                  | Deliverable artifac
+           t                                              | Contents     
+                                                                         
+                                 |
+      298  | ---------------------------------------- | -----------------
+           ---------------------------------------------------- | -------
+           --------------------------------------------------------------
+           ------------------------------- |
+      299  | **Stage 2a — Schema**                  | `db/schema_v2.sql` 
+           (or additive migration in `db/schema.sql`)         | `customer
+           _type` NOT NULL + CHECK constraint on `OrderHeader_selvalakshm
+           i`, `AppConfig_selvalakshmi`, `OrderAllocation_selvalakshmi`, 
+           `Backorder_selvalakshmi`, new `OrderFulfilment` columns |
+      300 -| **Stage 2b — Seed data**               | `db/seed_v2.sql`   
+          -                                                    | At least
+          - one `PRIORITY` customer, inventory fixtures spanning the exac
+          -t-70%, below-70%, and over-100% cases (T-20–T-25) |           
+      300 +| **Stage 2b — Seed data**               | `db/seed_v2.sql`   
+          +                                                    | Orders/f
+          +ixtures using `customerType: "Priority"`, inventory spanning t
+          +he exact-70%, below-70%, and over-100% cases (T-20–T-25) |    
+      301  | **Stage 2c — Fulfilment engine**       | `backend/src/engine
+           /fulfilmentEngine.ts` (extended) + unit tests       | `selectW
+           arehousesForPriority()` alongside the untouched Stage 1 `selec
+           tWarehouse()`; unit tests T-20–T-25, T-27–T-29 |
+      302  | **Stage 2d — Stored procedures**       | `db/procs/*.sql` (e
+           xtended)                                            | New/exte
+           nded proc for multi-row allocation insert + backorder insert i
+           n one transaction               |
+      303  | **Stage 2e — API layer**               | `backend/src/routes
+           /*.ts`, `responseMapper.ts` (extended) + E2E tests  | Updated 
+           response shape (§6.2); E2E tests T-20–T-30                    
+                                            |
+
+● Update(version2.md)
+  ⎿  Added 1 line, removed 1 line
+      301  | **Stage 2c — Fulfilment engine**       | `backend/src/engine
+           /fulfilmentEngine.ts` (extended) + unit tests       | `selectW
+           arehousesForPriority()` alongside the untouched Stage 1 `selec
+           tWarehouse()`; unit tests T-20–T-25, T-27–T-29 |
+      302  | **Stage 2d — Stored procedures**       | `db/procs/*.sql` (e
+           xtended)                                            | New/exte
+           nded proc for multi-row allocation insert + backorder insert i
+           n one transaction               |
+      303  | **Stage 2e — API layer**               | `backend/src/routes
+           /*.ts`, `responseMapper.ts` (extended) + E2E tests  | Updated 
+           response shape (§6.2); E2E tests T-20–T-30                    
+                                            |
+      304 -| **Stage 2f — UI**                      | `frontend/src/pages
+          -/*.tsx` (extended)                                  | `PARTIAL
+          -LY_RELEASED` status styling, backorder display, priority flag 
+          -shown on customer records       |                             
+      304 +| **Stage 2f — UI**                      | `frontend/src/pages
+          +/*.tsx` (extended)                                  | `PARTIAL
+          +LY_RELEASED` status styling, backorder display, `customerType`
+          + selector (`Standard`/`Priority`) on the Submit Order form |  
+      305  | **Stage 2g — Sign-off**                | `test-results-v2.md
+           `                                                  | Full §7 s
+           cenario matrix, plus a re-run of `development.md` §10 T-01–T-1
+           9 proving no regression         |
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Good, those remaining PRIORITY_RELEASE_THRESHOLD_PCT references are just the
+  config-key name (unrelated to customer type), so no further changes needed
+  there.
+
+  I've updated version2.md so customerType is the 2-value type ("Standard" /
+  "Priority") carried on the order itself, required and validated, rather than a
+  new attribute on the customer master:
+
+  - §2 table — updated to describe customer_type as a required, validated enum
+    driving the branch.
+  - §3.1 — replaced the "new column on Customer master" design with:
+    OrderHeader_selvalakshmi.customer_type becomes NOT NULL with a CHECK
+    (customer_type IN ('Standard','Priority')) constraint; invalid/missing
+    values now fail structural validation (HTTP 400).
+  - §5.1 — the branch now reads customerType == "Standard" / "Priority".
+  - §6.1 — request section rewritten: customerType is required, exactly two
+    literal values, validated like any other field.
+  - §6.3, §8, §9 — removed the stray "customer master priority flag" references,
+    replaced with the order-level field.
+  - D-14 — revised to state this is confirmed by the requirement text's
+    exact-value API convention, not an open assumption.
+
+  One thing worth flagging: I noticed new_requirement.md (which just opened)
+  specifies several other literal conventions that current version2.md doesn't
+  yet match exactly — status values "Released"/"PartiallyReleased"/"Blocked" (I
+  have RELEASED/PARTIALLY_RELEASED/BLOCKED), field name backorderedQuantity (I
+  have backorderQuantity), and integer quantities (I have DECIMAL(18,3)). Want
+  me to reconcile version2.md against new_requirement.md's exact API conventions
+  too, or is that a separate pass?

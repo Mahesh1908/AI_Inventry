@@ -37,7 +37,13 @@ INSERT INTO dbo.Product_selvalakshmi (product_id, product_name, uom, is_active) 
     ('PRD-T08',     'RMC Grade M25',              'MT',  1),  -- T-08 (enough stock, date too late)
     ('PRD-T09',     'Sulphate Resistant Cement',  'BAG', 1),  -- T-09/T-10 (boundary date)
     ('PRD-T18',     'OPC 43 Grade Cement',        'BAG', 1),  -- T-18 (concurrency)
-    ('PRD-NOSTOCK', 'Discontinued Blend',         'BAG', 1);  -- T-06 (PRODUCT_NOT_FOUND - no inventory rows)
+    ('PRD-NOSTOCK', 'Discontinued Blend',         'BAG', 1),  -- T-06 / T-29 (PRODUCT_NOT_FOUND - no inventory rows)
+    ('PRD-P20',     'Priority Test Blend 20',     'BAG', 1),  -- T-20 (priority, WH-A alone has 100%)
+    ('PRD-P21',     'Priority Test Blend 21',     'BAG', 1),  -- T-21 (priority, WH-A + WH-B sum exactly equals qty)
+    ('PRD-P22',     'Priority Test Blend 22',     'BAG', 1),  -- T-22 (priority, combined exactly 70% - boundary)
+    ('PRD-P23',     'Priority Test Blend 23',     'BAG', 1),  -- T-23 (priority, combined 69.999% - below boundary)
+    ('PRD-P24',     'Priority Test Blend 24',     'BAG', 1),  -- T-24 (priority, combined exceeds qty)
+    ('PRD-P25',     'Priority Test Blend 25',     'BAG', 1);  -- T-25 (priority, WH-B has zero stock - skipped)
 GO
 
 -- ----------------------------------------------------------------------------
@@ -91,5 +97,55 @@ INSERT INTO dbo.Inventory_selvalakshmi (product_id, warehouse_id, available_quan
     ('PRD-T18', 'WH-B', 10.000,  '2026-10-05', SYSUTCDATETIME()),
     ('PRD-T18', 'WH-C', 10.000,  '2026-10-05', SYSUTCDATETIME());
 
--- PRD-NOSTOCK: intentionally has NO inventory rows in any warehouse (T-06 / PRODUCT_NOT_FOUND).
+-- PRD-NOSTOCK: intentionally has NO inventory rows in any warehouse (T-06 / T-29 / PRODUCT_NOT_FOUND).
+
+-- ----------------------------------------------------------------------------
+-- version2.md §7 - Stage 2 priority-customer inventory fixtures.
+-- Order quantities used by the corresponding test scenario are noted inline;
+-- dispatch dates are informational only for priority orders (D-15).
+-- ----------------------------------------------------------------------------
+
+-- PRD-P20: T-20 - order qty 300; WH-A alone already has 100% -> RELEASED from WH-A only.
+INSERT INTO dbo.Inventory_selvalakshmi (product_id, warehouse_id, available_quantity, earliest_dispatch_date, updated_at) VALUES
+    ('PRD-P20', 'WH-A', 500.000, '2026-10-05', SYSUTCDATETIME()),
+    ('PRD-P20', 'WH-B', 50.000,  '2026-10-05', SYSUTCDATETIME()),
+    ('PRD-P20', 'WH-C', 50.000,  '2026-10-05', SYSUTCDATETIME());
+
+-- PRD-P21: T-21 - order qty 500; no single warehouse suffices, but WH-A (300) + WH-B (200)
+-- combined equal exactly the requested quantity -> RELEASED, two allocation rows.
+INSERT INTO dbo.Inventory_selvalakshmi (product_id, warehouse_id, available_quantity, earliest_dispatch_date, updated_at) VALUES
+    ('PRD-P21', 'WH-A', 300.000, '2026-10-05', SYSUTCDATETIME()),
+    ('PRD-P21', 'WH-B', 200.000, '2026-10-07', SYSUTCDATETIME()),
+    ('PRD-P21', 'WH-C', 10.000,  '2026-10-05', SYSUTCDATETIME());
+
+-- PRD-P22: T-22 - order qty 1000; combined WH-A+B+C = 700 = exactly 70% (inclusive boundary)
+-- -> PARTIALLY_RELEASED, released 700, one Open backorder for 300.
+INSERT INTO dbo.Inventory_selvalakshmi (product_id, warehouse_id, available_quantity, earliest_dispatch_date, updated_at) VALUES
+    ('PRD-P22', 'WH-A', 300.000, '2026-10-05', SYSUTCDATETIME()),
+    ('PRD-P22', 'WH-B', 250.000, '2026-10-06', SYSUTCDATETIME()),
+    ('PRD-P22', 'WH-C', 150.000, '2026-10-07', SYSUTCDATETIME());
+
+-- PRD-P23: T-23 - order qty 1000; combined WH-A+B+C = 699.999 = 69.9999% -> below the
+-- 70% threshold -> BLOCKED / INSUFFICIENT_STOCK, no allocation, no backorder.
+INSERT INTO dbo.Inventory_selvalakshmi (product_id, warehouse_id, available_quantity, earliest_dispatch_date, updated_at) VALUES
+    ('PRD-P23', 'WH-A', 300.000,  '2026-10-05', SYSUTCDATETIME()),
+    ('PRD-P23', 'WH-B', 250.000,  '2026-10-06', SYSUTCDATETIME()),
+    ('PRD-P23', 'WH-C', 149.999,  '2026-10-07', SYSUTCDATETIME());
+
+-- PRD-P24: T-24 - order qty 300; no single warehouse suffices (WH-A=200) but WH-A + WH-B
+-- combined (200+500=700) exceeds the requested quantity -> released never exceeds qty
+-- (WH-A 200 + WH-B 100 of its 500), WH-C untouched, WH-B's remaining 400 left alone.
+INSERT INTO dbo.Inventory_selvalakshmi (product_id, warehouse_id, available_quantity, earliest_dispatch_date, updated_at) VALUES
+    ('PRD-P24', 'WH-A', 200.000, '2026-10-05', SYSUTCDATETIME()),
+    ('PRD-P24', 'WH-B', 500.000, '2026-10-06', SYSUTCDATETIME()),
+    ('PRD-P24', 'WH-C', 500.000, '2026-10-07', SYSUTCDATETIME());
+
+-- PRD-P25: T-25 - order qty 1000; WH-A has partial stock (300), WH-B is zero (must be
+-- skipped, not a zero-quantity allocation row), WH-C (400) covers the rest needed to
+-- reach the 70% threshold (300+400=700) -> PARTIALLY_RELEASED, allocation rows for
+-- WH-A and WH-C only.
+INSERT INTO dbo.Inventory_selvalakshmi (product_id, warehouse_id, available_quantity, earliest_dispatch_date, updated_at) VALUES
+    ('PRD-P25', 'WH-A', 300.000, '2026-10-05', SYSUTCDATETIME()),
+    ('PRD-P25', 'WH-B', 0.000,   '2026-10-05', SYSUTCDATETIME()),
+    ('PRD-P25', 'WH-C', 400.000, '2026-10-07', SYSUTCDATETIME());
 GO

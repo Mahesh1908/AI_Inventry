@@ -16,7 +16,7 @@ router.post('/orders', async (req, res, next) => {
     const result = await submitOrder({
       orderId: body.orderId,
       customerId: body.customerId,
-      customerType: body.customerType ?? null,
+      customerType: body.customerType,
       productId: body.productId,
       quantity: body.quantity,
       promisedDeliveryDate: body.promisedDeliveryDate,

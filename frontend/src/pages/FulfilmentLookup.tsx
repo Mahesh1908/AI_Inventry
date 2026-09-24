@@ -75,11 +75,19 @@ export default function FulfilmentLookup() {
       )}
 
       {result && (
-        <div className={`panel ${result.status === 'RELEASED' ? 'panel-success' : 'panel-blocked'}`}>
+        <div
+          className={`panel ${
+            result.status === 'RELEASED'
+              ? 'panel-success'
+              : result.status === 'PARTIALLY_RELEASED'
+                ? 'panel-partial'
+                : 'panel-blocked'
+          }`}
+        >
           <h3>
             Order {result.orderId} — {result.status}
           </h3>
-          {result.status === 'RELEASED' ? (
+          {result.status !== 'BLOCKED' && (
             <>
               <p>Released quantity: {result.releasedQuantity}</p>
               {result.allocations.map((a) => (
@@ -89,9 +97,13 @@ export default function FulfilmentLookup() {
               ))}
               <p>Expected delivery date: {result.expectedDeliveryDate}</p>
             </>
-          ) : (
-            <p>Reason: {result.reason}</p>
           )}
+          {result.status === 'PARTIALLY_RELEASED' && (
+            <p className="badge">
+              Backorder ({result.backorderStatus}): {result.backorderQuantity} pending
+            </p>
+          )}
+          {result.status === 'BLOCKED' && <p>Reason: {result.reason}</p>}
           <p>Promised delivery date: {result.promisedDeliveryDate}</p>
           <p>Evaluated at: {result.evaluatedAt}</p>
         </div>

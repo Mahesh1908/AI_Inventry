@@ -1,0 +1,515 @@
+
+> /anthropic-skills:requirement-planner
+
+  Searched for 1 pattern, read 3 files (ctrl+o to expand)
+
+● Repo is greenfield — nothing but a placeholder README, no scaffolding, no DB,
+  no tests. The requirement.md is already a thorough, well-structured spec
+  (essentially an RFC), which simplifies planning but also means most
+  "requirements" are already resolved; my job is to organize them into a build
+  plan and surface what's genuinely still open.
+
+  Current understanding
+
+  A cement company needs an order-fulfilment system across 3 fixed warehouses
+  (WH-A/B/C). On order submission, the system runs a deterministic decision
+  chain — customer eligibility → product/stock existence → aggregate stock
+  sufficiency → allocation-by-earliest-dispatch-date → delivery-date feasibility
+  — and either releases the order (with per-warehouse allocations and inventory
+  deduction, all in one transaction) or persists it as blocked with a specific
+  reason code. Results are retrievable by order id, idempotently on
+  resubmission. Stack: React+TS frontend, Node/Express+TS backend, MSSQL.
+  Nothing exists in the repo yet — this is a from-scratch build.
+
+  The spec itself already encodes the answers to most ambiguity classes
+  (boundary rule for delivery date is inclusive per A-02/T-09, blocked orders
+  are terminal per A-05, customer_type is a no-op field per A-03, etc.), so I
+  did not re-derive those — I took them as fixed unless flagged below.
+
+  Requirements and acceptance conditions
+
+  ID: FR-01
+  Requirement: Order submission + id generation
+  Observable acceptance condition: order_id supplied → used as-is; omitted →
+  ORD-<seq> generated and returned in response
+  ────────────────────────────────────────
+  ID: FR-02
+  Requirement: Structural validation
+  Observable acceptance condition: Missing/empty field, qty ≤ 0, bad date
+  format,
+  or bad order_id format → HTTP 400, zero DB writes
+  ────────────────────────────────────────
+  ID: FR-03
+  Requirement: customer_type captured, inert
+  Observable acceptance condition: Field persisted on OrderHeader; no code path
+  branches on its value
+  ────────────────────────────────────────
+  ID: FR-04
+  Requirement: Customer eligibility
+  Observable acceptance condition: Unknown customer → persisted BLOCKED
+  CUSTOMER_NOT_FOUND; known but not ELIGIBLE → BLOCKED CUSTOMER_NOT_ELIGIBLE
+  ────────────────────────────────────────
+  ID: FR-05
+  Requirement: Stock existence + sufficiency
+  Observable acceptance condition: No inventory rows → BLOCKED
+  PRODUCT_NOT_FOUND;
+  sum across 3 WH < qty → BLOCKED INSUFFICIENT_STOCK with reason text showing
+  both numbers
+  ────────────────────────────────────────
+  ID: FR-06
+  Requirement: Allocation + delivery commitment
+  Observable acceptance condition: Greedy allocation sorted by
+  earliest_dispatch_date asc, tie-break warehouse_id asc;
+  expected_delivery_date = MAX(allocated dispatch dates) + TRANSIT_DAYS; <=
+  promised date passes (inclusive), else BLOCKED DELIVERY_DATE_NOT_MET
+  ────────────────────────────────────────
+  ID: FR-07
+  Requirement: Release transaction
+  Observable acceptance condition: Single transaction: insert header, insert
+  allocation rows, deduct inventory (locked/conditional update), insert
+  fulfilment row — all-or-nothing
+  ────────────────────────────────────────
+  ID: FR-08
+  Requirement: Blocking + evaluation order
+  Observable acceptance condition: First failing check wins, in order customer →
+
+  product/stock → delivery date; blocked orders never touch
+  inventory/allocation; terminal (no re-eval endpoint exists)
+  ────────────────────────────────────────
+  ID: FR-09
+  Requirement: Idempotent resubmission
+  Observable acceptance condition: Existing order_id resubmitted → stored result
+
+  returned, no re-processing, no double deduction, response flags "previously
+  recorded"
+  ────────────────────────────────────────
+  ID: FR-10
+  Requirement: Fulfilment retrieval
+  Observable acceptance condition: GET /orders/{id}/fulfilment returns full
+  result incl. allocations for released orders; unknown id → 404
+  ────────────────────────────────────────
+  ID: NFR-02/03
+  Requirement: Concurrency safety
+  Observable acceptance condition: Two concurrent orders for same product cannot
+
+  oversell; DB CHECK prevents negative available_quantity
+  ────────────────────────────────────────
+  ID: NFR-07
+  Requirement: SQL injection safety
+  Observable acceptance condition: All queries parameterized
+  ────────────────────────────────────────
+  ID: NFR-08
+  Requirement: Engine modularity
+  Observable acceptance condition: Fulfilment engine importable/testable
+  independent of Express routes
+
+  Questions and provisional assumptions
+
+  O-01 — Past promised_delivery_date: validation error or business block?
+  Impact: determines whether a past date returns HTTP 400 (nothing persisted) or
+  is persisted as BLOCKED DELIVERY_DATE_NOT_MET. This changes what T-16-style
+  tests expect and whether FR-02's validator needs a "not in the past" rule.
+  Question: Should structural validation reject a past promised_delivery_date,
+  or should it always be allowed through to the business rule engine?
+  Provisional assumption (reversible): treat it as a business-rule failure, not
+  a validation error — a past date will almost always fail
+  expected_delivery_date <= promised_delivery_date naturally, so no special
+  validation code is needed. This is the simpler default and is easy to add a
+  validation-layer check for later if you decide otherwise.
+
+  O-02 — Quantity precision: whole bags or decimal MT?
+  Impact: affects UI input step/formatting and whether display should round;
+  does not affect DB schema (spec already fixes DECIMAL(18,3)) or engine logic
+  (comparisons work identically either way).
+  Question: Should the UI enforce integer-only quantity input, or allow up to 3
+  decimal places as the schema permits?
+  Provisional assumption: allow decimals (matches schema as specified); no
+  UI-side rounding/step restriction. Low-risk to change later since it's
+  UI-only.
+
+  O-03 — Target MSSQL instance
+  Impact: determines connection string/config approach and whether the seed
+  script needs a CREATE DATABASE step.
+  Question: Is there an existing MSSQL server/database to point at, or should
+  the seed/setup script create a fresh database?
+  Provisional assumption: setup script creates the database if not present
+  (idempotent IF NOT EXISTS), and connection details come from .env (NFR-06).
+  This is the safer default for a from-scratch repo and doesn't preclude
+  pointing at an existing instance later — just change the env vars.
+
+  No other ambiguities materially change observable behavior — the spec is
+  otherwise unusually precise (explicit tie-break rules, explicit inclusive
+  boundary, explicit evaluation order, explicit HTTP codes for every path).
+
+  Implementation slices
+
+  Ordered by dependency; each is a vertical slice (DB → engine → API → UI →
+  tests) rather than a horizontal layer pass, per repo convention preference for
+  shippable increments.
+
+  Slice 1 — Schema + seed data
+  - Requirement IDs: §4 (all tables), 9.1(2)
+  - Files: db/schema.sql, db/seed.sql, db/README.md (how to run)
+  - Dependencies: O-03 answer (create-db vs existing) before writing
+    schema.sql's header
+  - Tests/checks: run script against local MSSQL, verify tables + constraints
+    (CHECK on qty>0, available_quantity>=0) + seed rows exist covering
+    eligible/ineligible customers, multi-warehouse stock spreads for T-01..T-11
+  - Completion condition: schema applies cleanly twice (idempotent), seed data
+    supports every scenario in §9.2 without hand-editing
+
+  Slice 2 — Fulfilment engine (pure module, no HTTP/DB coupling beyond a
+  repository interface)
+  - Requirement IDs: FR-03, FR-04, FR-05, FR-06, FR-08, NFR-08
+  - Files: backend/src/engine/fulfilmentEngine.ts,
+    backend/src/engine/rules/{eligibility,stock,delivery}.ts,
+    backend/src/config.ts (TRANSIT_DAYS)
+  - Dependencies: Slice 1 (for realistic types/shape only — engine itself can be
+    unit-tested with in-memory fakes)
+  - Tests/checks: unit tests for each rule in isolation + the ordered
+    short-circuit (customer→stock→delivery), boundary case T-09/T-10, allocation
+    tie-break T-11
+  - Completion condition: engine returns a decision object (RELEASED/BLOCKED +
+    reason + allocations + dates) given pure inputs, with zero DB or Express
+    imports
+
+  Slice 3 — Order submission API (POST /api/orders)
+  - Requirement IDs: FR-01, FR-02, FR-07, FR-09, NFR-01, NFR-02, NFR-03, NFR-05,
+    NFR-07
+  - Files: backend/src/routes/orders.ts,
+    backend/src/repositories/orderRepository.ts,
+    backend/src/repositories/inventoryRepository.ts (row locking / conditional
+    update), backend/src/validation/orderValidation.ts
+  - Dependencies: Slice 1, Slice 2
+  - Tests/checks: E2E tests T-01–T-11, T-15–T-18 against seeded DB; a
+    concurrency test (two parallel requests against same low-stock product) for
+    NFR-02
+  - Completion condition: all of T-01–T-11 and T-15–T-18 pass against a real
+    seeded MSSQL instance; transaction rollback verified by forcing a
+    mid-transaction failure
+
+  Slice 4 — Retrieval + list/reference APIs
+  - Requirement IDs: FR-10, §7 endpoints 2–6
+  - Files: backend/src/routes/orders.ts (extend),
+    backend/src/routes/inventory.ts, backend/src/routes/customers.ts,
+    backend/src/routes/products.ts
+  - Dependencies: Slice 3
+  - Tests/checks: E2E T-12, T-13, T-14
+  - Completion condition: T-12/T-13/T-14 pass; /inventory, /customers, /products
+    return seeded data correctly
+
+  Slice 5 — Frontend UI
+  - Requirement IDs: §8 (all four screens)
+  - Files: frontend/src/pages/SubmitOrder.tsx, FulfilmentLookup.tsx,
+    OrdersList.tsx, InventoryView.tsx, frontend/src/api/client.ts
+  - Dependencies: Slice 3, Slice 4 (needs working API)
+  - Tests/checks: manual run-through of golden path (submit → released, submit →
+    blocked, lookup by id, inventory reflects deduction) — no automated UI
+    tests specified in scope
+  - Completion condition: all four screens functional against the real API;
+    loading/error states visible; RELEASED green / BLOCKED red styling present
+
+  Validation matrix
+
+  ┌──────────────────┬───────┬──────────────────────────────────────────────┐
+  │ Scenario (§9.2)  │ Slice │                    Layer                     │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-01, T-02, T-03 │ 3     │ E2E — allocation across 1/2/3 warehouses     │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-04, T-05       │ 2 + 3 │ Unit (engine) + E2E (persistence)            │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-06, T-07       │ 2 + 3 │ Unit + E2E                                   │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-08, T-09, T-10 │ 2 + 3 │ Unit (boundary math) + E2E                   │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-11             │ 2     │ Unit (tie-break ordering)                    │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-12, T-13, T-14 │ 4     │ E2E                                          │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-15             │ 3     │ E2E (idempotency, verify no double           │
+  │                  │       │ deduction)                                   │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-16, T-17       │ 3     │ E2E (validation, id generation)              │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ T-18             │ 3     │ E2E (inventory unchanged after block) — pair │
+  │                  │       │  with every BLOCKED test                     │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ NFR-02           │ 3     │ E2E — two parallel requests, low-stock       │
+  │ concurrency      │       │ product                                      │
+  ├──────────────────┼───────┼──────────────────────────────────────────────┤
+  │ NFR-03 negative  │ 1 + 3 │ DB CHECK constraint + app-level guard        │
+  │ stock            │       │                                              │
+  └──────────────────┴───────┴──────────────────────────────────────────────┘
+
+  Risks and deferred work
+
+  - Row-locking approach unspecified: spec requires "locked or conditionally
+    updated" inventory rows (FR-07, NFR-02) but doesn't pick a mechanism. MSSQL
+    options: UPDLOCK, ROWLOCK hints in a SELECT ... FOR UPDATE-style pattern, or
+    a conditional UPDATE ... WHERE available_quantity >= @qty with rowcount
+    check. This is an implementation detail, not a requirement ambiguity —
+    flagging so Slice 3 doesn't stall on it, recommend the
+    conditional-UPDATE-with-rowcount-check approach since it needs no explicit
+    transaction isolation-level tuning.
+  - Order id format for validation (FR-02): "matches the allowed format and
+    length" is stated but the format itself isn't pinned down beyond the example
+    ORD-1001. Low risk — worth confirming a regex before Slice 3, but doesn't
+    block earlier slices.
+  - No auth (explicitly out of scope): fine for this release, but means the
+    demo/test environment is the only environment this ships to as-is.
+  - Deferred by spec, not by me: customer-type rules, partial/backorder
+    fulfilment, replenishment, pricing/tax — all explicitly out of scope (§2.2),
+    not reintroduced here.
+  - Concurrency test tooling: E2E test suite will need a way to fire two
+    truly-parallel requests (not just sequential awaits) to meaningfully
+    exercise NFR-02 — worth deciding the test runner's concurrency primitive
+    early in Slice 3 rather than retrofitting.
+
+  Three open questions (O-01, O-02, O-03) are worth a quick confirmation before
+  Slice 1/3 start, but none of my provisional assumptions block starting Slice 1
+  or Slice 2 today.
+
+> <ide_opened_file>The user opened the file d:\AI_Inventry\requirement.md in
+  the IDE. This may or may not be related to the current
+  task.</ide_opened_file>
+
+> 1)if no warehouse cannot able to fulfil the satisfied quantity and date block
+  the order with meaningful reason and create no allocation. if all the 3 WH
+  have the stock go with the order WH-A,WH-B,WH-C
+  2)no dont round-off the value in the ui
+  3)use the local-server,defined database in the mcp and for the table ans sp
+  creation use the table ends with _selvalakshmi.
+
+  maintain the architecture documents and the artifacts which has the each
+  stage development details.
+  things to note
+  1)the full requested quantity must be available from one warehouse,do not
+  combain warehouse inventry.
+  2)earliest dispatch date for the selected warehouse on/before delivery date
+  3)For released orders,persist the order,fulfilment decision,selected
+  warehouse and allocated quantity.
+  4)if the same order id is sumbitted again reuse the same order id
+  5)if order id is not in the database show 404 error
+  understand mu requirement.md file and the above key ponits,give me the
+  development.md file with all my requirement flow clearly,which helps to
+  develop the application without any assumption.
+
+  Searched for 4 patterns, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● One thing in your notes needs a direct answer before I write the flow, since
+  it changes the actual date math used everywhere in the engine and tests.
+
+● User answered Claude's questions:
+  ⎿  · For the single-warehouse delivery check, should the 2-day transit time
+     still be added, or does 'earliest dispatch date on/before delivery date'
+     mean comparing the raw dispatch date directly to the promised date with no
+     transit days added? → Drop transit days
+
+● Write(development.md)
+  ⎿  Wrote 443 lines to development.md
+       1 # Cement Company — Order Fulfilment & Inventory Management Syste
+         m
+       2
+         .md where noted)**
+       4
+       5 | Field | Value |
+       6 |---|---|
+       8 | Version | 1.0 |
+       9 | Date | 2026-09-24 |
+      10 | Author | Mahesh Selvalakshmi (maheshslm@ramcocements.co.in) |
+     … +693 lines (ctrl+o to expand)
+
+● I've written development.md, which supersedes the multi-warehouse allocation
+  and transit-day logic from requirement.md with your single-warehouse rules.
+  Key points to be aware of:
+
+  - Selection is single-warehouse, fixed priority WH-A → WH-B → WH-C — first
+    warehouse meeting both quantity and date wins, even if a later one in the
+    list has more stock or an earlier dispatch date.
+  - Transit days are gone entirely — dispatch date is compared directly to the
+    promised date (per your answer to my one clarifying question).
+  - DB target resolved from .mcp.json: existing IDBTesting database on
+    172.16.1.173,54321 — no new database is created; credentials stay out of the
+    doc.
+  - All tables/SPs use the _selvalakshmi suffix (§3), and I folded the old
+    multi-row OrderAllocation table into OrderFulfilment_selvalakshmi since only
+    one warehouse is ever involved — flagged as my design call in the Decisions
+    Log (§12, D-07) in case you'd rather keep it separate for audit history.
+  - §12 lists every decision so nothing is a silent assumption, and §13 lays out
+    the 7 development stages with their own artifacts as you asked.
+
+  Let me know if D-07 (folding allocation into the fulfilment table) or D-08
+  (order id regex) need a different call before Stage 1 starts.
+
+● Background command "Search common locations for MCP config files" completed
+(exit code 1: Some directories were inaccessible)
+
+● That earlier background search finished (superseded — I already found the
+  .mcp.json config directly). Nothing further to act on.
+
+> <ide_opened_file>The user opened the file d:\AI_Inventry\development.md in
+  the IDE. This may or may not be related to the current
+  task.</ide_opened_file>
+
+> for the released response ,when the status is released ,the response should
+  be {orderid:'ord1001','status':'released','reason':null,'releasedquantity':60
+  ,'backgroundquantity':0,'allocattions':[{'warehouse':WH-B','allocatedquantity
+  ':60}]}
+  if blocked the response will be,
+  {orderid:'ord1001','status':'blocked','reason':'blocked-credit
+  hold','releasedquantity':60,'backgroundquantity':0,'allocattions':0.
+  if unknown return 404 error
+  update these responses for different cases in the development.md and the
+  related structure
+
+● The field names releasedquantity / backgroundquantity suggest partial
+  fulfillment (release some, leave a remainder outstanding), which directly
+  conflicts with the all-or-nothing, single-warehouse rule we just locked in
+  (§2.2 of requirement.md explicitly excludes backorder/partial fulfillment, and
+  D-01/D-02 in development.md confirm one warehouse covers the whole order or
+  the order is blocked). I want to confirm before changing the response
+  contract, since this affects the core engine logic, not just the JSON shape.
+
+● User answered Claude's questions:
+  ⎿  · What do releasedquantity and backgroundquantity mean in the new response
+     shape? → Always all-or-nothing (Recommended)
+
+  Read 1 file (ctrl+o to expand)
+
+● Now updating the API response section with the new field names and confirmed
+  all-or-nothing semantics.
+
+● Update(development.md)
+  ⎿  Added 17 lines, removed 12 lines
+      299  {
+      300    "orderId": "ORD-1001",
+      301    "status": "RELEASED",
+      302 -  "blockReasonCode": null,                                    
+      303 -  "blockReason": null,                                        
+      304 -  "selectedWarehouseId": "WH-A",                              
+      305 -  "allocatedQuantity": 300,                                   
+      306 -  "warehouseDispatchDate": "2026-10-05",                      
+      302 +  "reason": null,                                             
+      303 +  "releasedQuantity": 300,                                    
+      304 +  "backorderQuantity": 0,                                     
+      305 +  "allocations": [                                            
+      306 +    { "warehouseId": "WH-A", "allocatedQuantity": 300, "wareho
+          +useDispatchDate": "2026-10-05" }                              
+      307 +  ],                                                          
+      308    "expectedDeliveryDate": "2026-10-05",
+      309    "promisedDeliveryDate": "2026-10-10",
+      310    "evaluatedAt": "2026-09-24T10:15:00Z",
+     ...
+      312  }
+      313  ```
+      314  
+      314 -Note there is no `allocations` array any more — `selectedWareh
+          -ouseId` and `allocatedQuantity` are single scalar fields, sinc
+          -e only one warehouse is ever involved.                        
+      315 +Field semantics — **all-or-nothing, confirmed** (no partial fu
+          +lfillment was introduced by this shape change):               
+      316  
+      317 +- `releasedQuantity` — the full order quantity when `RELEASED`
+          +, otherwise `0`. Never a partial amount.                      
+      318 +- `backorderQuantity` — the remainder **not** released: always
+          + `0` when `RELEASED` (since the whole order was released), and
+          + always equal to the full order quantity when `BLOCKED` (since
+          + nothing was released). It is a display convenience, not a tra
+          +cked backorder — this release has no backorder/re-fulfilment p
+          +rocess (requirement.md §2.2 still holds).                     
+      319 +- `allocations` — an **array**, but it holds **exactly one ent
+          +ry when `RELEASED`** (the single selected warehouse) and is an
+          + **empty array `[]` when `BLOCKED`** (see §7.3 — using `[]` ra
+          +ther than a scalar `0` so API clients can treat the field as a
+          + consistent list type either way).                            
+      320 +- `reason` — `null` when `RELEASED`; the human-readable block 
+          +reason text when `BLOCKED` (see §7.3). The machine-readable `b
+          +lock_reason_code` (§6.5 table) is still stored in `OrderFulfil
+          +ment_selvalakshmi` and still governs the engine's internal bra
+          +nching and test assertions (§10) — it is simply no longer part
+          + of the API response surface. Flag this if you want the code e
+          +xposed to API clients as well (e.g. for UI styling logic beyon
+          +d just green/red on `status`).                                
+      321 +                                                              
+      322  ### 7.3 `POST /api/orders` — blocked response (HTTP 201)
+      323  
+      324  ```json
+      325  {
+      326    "orderId": "ORD-1002",
+      327    "status": "BLOCKED",
+      322 -  "blockReasonCode": "INSUFFICIENT_STOCK",                    
+      323 -  "blockReason": "Requested quantity 900 is not available in f
+          -ull from any single warehouse. WH-A: 200, WH-B: 300, WH-C: 150
+          -.",                                                           
+      324 -  "selectedWarehouseId": null,                                
+      325 -  "allocatedQuantity": null,                                  
+      326 -  "warehouseDispatchDate": null,                              
+      328 +  "reason": "Requested quantity 900 is not available in full f
+          +rom any single warehouse. WH-A: 200, WH-B: 300, WH-C: 150.",  
+      329 +  "releasedQuantity": 0,                                      
+      330 +  "backorderQuantity": 900,                                   
+      331 +  "allocations": [],                                          
+      332    "expectedDeliveryDate": null,
+      333    "promisedDeliveryDate": "2026-10-10",
+      334    "evaluatedAt": "2026-09-24T10:16:00Z",
+     ...
+      340  
+      341  ### 7.4 `GET /api/orders/{orderId}/fulfilment` — response shap
+           e
+      342  
+      338 -Same fields as §7.2/§7.3, read back from `OrderFulfilment_selv
+          -alakshmi` joined to `OrderHeader_selvalakshmi`.               
+      343 +Same fields as §7.2/§7.3, read back from `OrderFulfilment_selv
+          +alakshmi` joined to `OrderHeader_selvalakshmi`. `releasedQuant
+          +ity`, `backorderQuantity` and `allocations` are derived at rea
+          +d time from the stored `status`, `selected_warehouse_id`, `all
+          +ocated_quantity` and `OrderHeader_selvalakshmi.quantity` — the
+          +y are not stored as separate columns.                         
+      344  
+      345  ### 7.5 Error responses (unchanged)
+      346  
+
+● Now let me add these two decisions to the Decisions Log so the
+  response-contract change is traceable alongside the others.
+
+● Update(development.md)
+  ⎿  Added 2 lines
+      428  | D-09 | Past promised date | Not rejected at validation; natu
+           rally fails the warehouse-selection date check | Confirmed (re
+           solves requirement.md O-01) |
+      429  | D-10 | Idempotent resubmission | Same `order_id` reused; sto
+           red result returned unchanged; no re-deduction | Confirmed by 
+           you |
+      430  | D-11 | Unknown order id on lookup | HTTP 404 | Confirmed by 
+           you |
+      431 +| D-12 | `releasedQuantity` / `backorderQuantity` semantics | 
+          +All-or-nothing display fields only — not a partial-fulfillment
+          + feature. `releasedQuantity` is `0` or the full quantity; `bac
+          +korderQuantity` is its complement. No backorder tracking/re-fu
+          +lfilment process exists. | Confirmed by you |                 
+      432 +| D-13 | API response shape (§7.2/§7.3) | `blockReasonCode`/`b
+          +lockReason` collapsed into a single `reason` string; `selected
+          +WarehouseId`/`allocatedQuantity` moved into an `allocations` a
+          +rray (0 or 1 entries) instead of top-level scalars. `block_rea
+          +son_code` remains in the DB and engine internals for determini
+          +stic branching/tests (§10) but is dropped from the API surface
+          +. | Confirmed by you — reversible if you want `reasonCode` re-
+          +exposed for UI logic |                                        
+      433  
+      434  ---
+      435  
+
+● Updated development.md §7 and §12:
+
+  - Released: reason: null, releasedQuantity = full quantity, backorderQuantity:
+    0, allocations = one-entry array with {warehouseId, allocatedQuantity,
+    warehouseDispatchDate}.
+  - Blocked: reason = human-readable text, releasedQuantity: 0,
+    backorderQuantity = full quantity, allocations: [] (empty array, not a
+    scalar 0 — kept as a consistent list type for API clients).
+  - Confirmed these are display fields only, not a partial-fulfillment feature —
+    no engine/schema changes needed.
+  - The old machine-readable blockReasonCode is dropped from the API response
+    (still stored in the DB/engine for internal logic and test assertions) —
+    flagged as reversible in D-13 if you want it exposed too.
+  - 404-on-unknown-order-id was already in place, unchanged.

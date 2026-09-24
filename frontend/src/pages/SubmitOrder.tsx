@@ -1,12 +1,12 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { ApiRequestError, submitOrder } from "../api/client";
-import type { OrderFulfilmentResponse } from "../types/api";
+import type { CustomerType, OrderFulfilmentResponse } from "../types/api";
 
 interface FormState {
   orderId: string;
   customerId: string;
-  customerType: string;
+  customerType: CustomerType;
   productId: string;
   quantity: string;
   promisedDeliveryDate: string;
@@ -15,7 +15,7 @@ interface FormState {
 const EMPTY_FORM: FormState = {
   orderId: "",
   customerId: "",
-  customerType: "",
+  customerType: "Standard",
   productId: "",
   quantity: "",
   promisedDeliveryDate: "",
@@ -27,7 +27,7 @@ export default function SubmitOrder() {
   const [result, setResult] = useState<OrderFulfilmentResponse | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
 
-  function update<K extends keyof FormState>(key: K, value: string) {
+  function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
@@ -57,7 +57,7 @@ export default function SubmitOrder() {
       const response = await submitOrder({
         orderId: form.orderId.trim() || undefined,
         customerId: form.customerId.trim(),
-        customerType: form.customerType.trim() || undefined,
+        customerType: form.customerType,
         productId: form.productId.trim(),
         quantity: Number(form.quantity),
         promisedDeliveryDate: form.promisedDeliveryDate,
@@ -73,6 +73,13 @@ export default function SubmitOrder() {
       setLoading(false);
     }
   }
+
+  const panelClass =
+    result?.status === "RELEASED"
+      ? "panel-success"
+      : result?.status === "PARTIALLY_RELEASED"
+        ? "panel-partial"
+        : "panel-blocked";
 
   return (
     <section>
@@ -95,11 +102,15 @@ export default function SubmitOrder() {
           />
         </label>
         <label>
-          Customer Type
-          <input
+          Customer Type *
+          <select
             value={form.customerType}
-            onChange={(e) => update("customerType", e.target.value)}
-          />
+            onChange={(e) => update("customerType", e.target.value as CustomerType)}
+            required
+          >
+            <option value="Standard">Standard</option>
+            <option value="Priority">Priority</option>
+          </select>
         </label>
         <label>
           Product Id *
@@ -145,14 +156,12 @@ export default function SubmitOrder() {
       )}
 
       {result && (
-        <div
-          className={`panel ${result.status === "RELEASED" ? "panel-success" : "panel-blocked"}`}
-        >
+        <div className={`panel ${panelClass}`}>
           <h3>
             Order {result.orderId} — {result.status}
             {result.previouslyRecorded && <span className="badge"> (previously recorded)</span>}
           </h3>
-          {result.status === "RELEASED" ? (
+          {result.status !== "BLOCKED" && (
             <>
               <p>Released quantity: {result.releasedQuantity}</p>
               {result.allocations.map((a) => (
@@ -163,9 +172,13 @@ export default function SubmitOrder() {
               ))}
               <p>Expected delivery date: {result.expectedDeliveryDate}</p>
             </>
-          ) : (
-            <p>Reason: {result.reason}</p>
           )}
+          {result.status === "PARTIALLY_RELEASED" && (
+            <p className="badge">
+              Backorder ({result.backorderStatus}): {result.backorderQuantity} pending
+            </p>
+          )}
+          {result.status === "BLOCKED" && <p>Reason: {result.reason}</p>}
           <p>Promised delivery date: {result.promisedDeliveryDate}</p>
           <p>Evaluated at: {result.evaluatedAt}</p>
         </div>

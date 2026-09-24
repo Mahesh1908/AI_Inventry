@@ -10,6 +10,8 @@
   --success-border: #34a853;
   --error-bg: #fdecea;
   --error-border: #d93025;
+  --partial-bg: #fff4e0;
+  --partial-border: #b06a00;
 }
 
 * {
@@ -132,6 +134,11 @@ button:disabled {
   border-color: var(--error-border);
 }
 
+.panel-partial {
+  background: var(--partial-bg);
+  border-color: var(--partial-border);
+}
+
 .badge {
   font-size: 0.75rem;
   font-weight: 500;
@@ -169,6 +176,11 @@ button:disabled {
   font-weight: 700;
 }
 
+.status-partial {
+  color: var(--partial-border);
+  font-weight: 700;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #14161a;
@@ -177,6 +189,8 @@ button:disabled {
     --border: #33373f;
     --success-bg: #123420;
     --error-bg: #3a1414;
+    --partial-bg: #3a2c0f;
+    --partial-border: #e0a34a;
   }
 
   .data-table tbody tr:hover {

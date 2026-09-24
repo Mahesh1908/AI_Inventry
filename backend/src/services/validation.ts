@@ -1,3 +1,5 @@
+import { CUSTOMER_TYPES } from '../types/domain';
+
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
@@ -28,8 +30,9 @@ export function validateOrderBody(body: RawOrderBody): ValidationResult {
     errors.push('customerId is required and must be a non-empty string');
   }
 
-  if (body.customerType !== undefined && body.customerType !== null && typeof body.customerType !== 'string') {
-    errors.push('customerType, if supplied, must be a string');
+  // version2.md §3.1/§6.1: customerType is now required, exactly 'Standard' or 'Priority'.
+  if (typeof body.customerType !== 'string' || !CUSTOMER_TYPES.includes(body.customerType as any)) {
+    errors.push(`customerType is required and must be exactly one of: ${CUSTOMER_TYPES.join(', ')}`);
   }
 
   if (typeof body.productId !== 'string' || body.productId.trim() === '') {

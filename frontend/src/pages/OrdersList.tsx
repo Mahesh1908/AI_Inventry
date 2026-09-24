@@ -3,6 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { listOrders } from '../api/client';
 import type { OrderFulfilmentResponse } from '../types/api';
 
+const STATUS_CLASS: Record<OrderFulfilmentResponse['status'], string> = {
+  RELEASED: 'status-released',
+  PARTIALLY_RELEASED: 'status-partial',
+  BLOCKED: 'status-blocked',
+};
+
 export default function OrdersList() {
   const [orders, setOrders] = useState<OrderFulfilmentResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,7 +33,8 @@ export default function OrdersList() {
           <tr>
             <th>Order Id</th>
             <th>Status</th>
-            <th>Reason / Warehouse</th>
+            <th>Reason / Warehouse(s)</th>
+            <th>Backorder</th>
             <th>Promised Date</th>
             <th>Expected Date</th>
           </tr>
@@ -37,16 +44,21 @@ export default function OrdersList() {
             <tr key={o.orderId} onClick={() => navigate(`/lookup?orderId=${encodeURIComponent(o.orderId)}`)}>
               <td>{o.orderId}</td>
               <td>
-                <span className={o.status === 'RELEASED' ? 'status-released' : 'status-blocked'}>{o.status}</span>
+                <span className={STATUS_CLASS[o.status]}>{o.status}</span>
               </td>
-              <td>{o.status === 'RELEASED' ? o.allocations[0]?.warehouseId : o.reason}</td>
+              <td>
+                {o.status === 'BLOCKED'
+                  ? o.reason
+                  : o.allocations.map((a) => a.warehouseId).join(', ')}
+              </td>
+              <td>{o.status === 'PARTIALLY_RELEASED' ? `${o.backorderQuantity} (${o.backorderStatus})` : '—'}</td>
               <td>{o.promisedDeliveryDate}</td>
               <td>{o.expectedDeliveryDate ?? '—'}</td>
             </tr>
           ))}
           {orders.length === 0 && (
             <tr>
-              <td colSpan={5}>No orders yet.</td>
+              <td colSpan={6}>No orders yet.</td>
             </tr>
           )}
         </tbody>

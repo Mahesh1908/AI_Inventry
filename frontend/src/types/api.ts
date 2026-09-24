@@ -1,4 +1,6 @@
-export type FulfilmentStatus = 'RELEASED' | 'BLOCKED';
+export type FulfilmentStatus = 'RELEASED' | 'PARTIALLY_RELEASED' | 'BLOCKED';
+
+export type CustomerType = 'Standard' | 'Priority';
 
 export interface Allocation {
   warehouseId: string;
@@ -12,6 +14,7 @@ export interface OrderFulfilmentResponse {
   reason: string | null;
   releasedQuantity: number;
   backorderQuantity: number;
+  backorderStatus: 'OPEN' | null;
   allocations: Allocation[];
   expectedDeliveryDate: string | null;
   promisedDeliveryDate: string;
@@ -42,7 +45,7 @@ export interface InventoryRow {
 export interface SubmitOrderRequest {
   orderId?: string;
   customerId: string;
-  customerType?: string;
+  customerType: CustomerType;
   productId: string;
   quantity: number;
   promisedDeliveryDate: string;
