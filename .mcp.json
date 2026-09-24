@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "local-sqlserver": {
+      "command": "npx",
+      "args": ["-y", "mssql-mcp-server"],
+      "env": {
+        "MSSQL_CONNECTION_STRING": "Server=172.16.1.173,54321;Database=IDBTesting;User Id=Testuser;Password=123$Testuser;Encrypt=false;TrustServerCertificate=true;",
+        "MSSQL_ENABLE_EXECUTE_QUERY": "false"
+      }
+    }
+  }
+}
